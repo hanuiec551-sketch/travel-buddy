@@ -211,7 +211,9 @@ async function turn(userText) {
   }
   busy = false; $('main').disabled = false;
   if (elapsed() >= HARD_MAX_MIN) return finish();
-  if (running) listen();
+  // AI 음성이 끝나자마자 바로 마이크를 켜면, 스피커 소리가 채 가시기 전이라
+  // 기기가 마이크를 제대로 못 열어 다음 말을 놓치는 경우가 있어 살짝 틈을 둠
+  if (running) setTimeout(listen, 600);
 }
 
 // ---- 시작/종료 ----
