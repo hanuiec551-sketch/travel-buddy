@@ -6,7 +6,7 @@
 <title>하루 10분 이야기</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=Gowun+Batang:wght@400;700&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
   :root { --bg:#F4F1FB; --ink:#3D3A54; --accent:#8B7BC6; --accent2:#5FA8A0; --card:#ffffff; --line:#E4DDF5; }
   * { box-sizing: border-box; -webkit-font-smoothing: antialiased; }
@@ -17,6 +17,7 @@
   #bubble { width:100%; max-width:640px; min-height:170px; background:var(--card); border-radius:26px; padding:26px 24px;
             font-size:1.55rem; font-weight:500; letter-spacing:.005em; line-height:1.68; color:var(--ink);
             box-shadow:0 4px 18px rgba(90,70,150,.12); border:1px solid var(--line); }
+  #hint { font-family:'Gowun Batang',serif; font-size:1.05rem; font-style:italic; color:#8b84a8; line-height:1.7; }
   #me { width:100%; max-width:640px; min-height:2.4em; margin-top:12px; padding:8px 14px; font-size:1.2rem; color:#6d6690; text-align:center; }
   #status { font-family:'Gowun Dodum',sans-serif; font-size:1.25rem; margin:14px 0; min-height:1.8em; text-align:center; color:#6d6690; }
   button { font-family:'Gowun Dodum',sans-serif; border:0; border-radius:20px; color:#fff; cursor:pointer; }
@@ -32,7 +33,7 @@
 <body>
 <h1>💬 하루 10분 이야기</h1>
 <p id="topic">불러오는 중…</p>
-<div id="bubble">대화 시작하기를 눌러 시작해주세요.</div>
+<div id="bubble"><span id="hint">대화 시작하기를 누른 후, "안녕~" 이라고 말하면서 시작해주세요.</span></div>
 <div id="me"></div>
 <div id="status"></div>
 <button id="main">🎤 대화 시작하기</button>
