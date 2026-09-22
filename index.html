@@ -28,6 +28,10 @@
   #end { margin-top:22px; padding:14px 26px; font-size:1.15rem; background:#847b9e; }
   #bar { width:100%; max-width:640px; height:8px; background:var(--line); border-radius:8px; margin-top:18px; overflow:hidden; }
   #bar i { display:block; height:100%; width:0; background:var(--accent2); transition:width 1s linear; }
+  #typebox { width:100%; max-width:640px; margin-top:14px; display:flex; gap:8px; }
+  #typebox input { flex:1; padding:14px 16px; border-radius:14px; border:1px solid var(--line); font-size:1.05rem;
+                   font-family:'Noto Sans KR',sans-serif; color:var(--ink); }
+  #typebox button { padding:14px 18px; font-size:1.05rem; background:var(--accent2); }
 </style>
 </head>
 <body>
@@ -39,6 +43,10 @@
 <button id="main">🎤 대화 시작하기</button>
 <div id="bar"><i></i></div>
 <button id="end" hidden>오늘은 여기까지 할게요</button>
+<div id="typebox" hidden>
+  <input id="typeInput" type="text" placeholder="여기에 글자로 입력해보세요">
+  <button id="typeSend">보내기</button>
+</div>
 
 <script>
 // ▼▼▼ 설정 ▼▼▼ Apps Script 웹앱 배포 URL을 붙여넣으세요
@@ -54,11 +62,19 @@ let history = [], sid = Date.now() + '-' + Math.random().toString(36).slice(2, 7
 let t0 = 0, running = false, busy = false, rec = null, silentCount = 0, timer = null, ended = false;
 
 async function api(body) {
-  // text/plain 으로 보내 CORS 사전요청(preflight)을 피함
-  const r = await fetch(API, { method: 'POST', body: JSON.stringify({ k: KEY, sid, ...body }) });
-  const j = await r.json();
-  if (j.error) throw new Error(j.error);
-  return j;
+  // 서버 응답이 오래 걸리거나 아예 안 올 때 화면이 "생각하는 중"에서 영원히 멈추지 않도록
+  // 일정 시간 후 강제로 실패 처리(타임아웃)함
+  const ctrl = new AbortController();
+  const killer = setTimeout(() => ctrl.abort(), 25000);
+  try {
+    // text/plain 으로 보내 CORS 사전요청(preflight)을 피함
+    const r = await fetch(API, { method: 'POST', body: JSON.stringify({ k: KEY, sid, ...body }), signal: ctrl.signal });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    return j;
+  } finally {
+    clearTimeout(killer);
+  }
 }
 const elapsed = () => t0 ? (Date.now() - t0) / 60000 : 0;
 const setStatus = s => $('status').textContent = s;
@@ -72,27 +88,41 @@ fetch(API + '?k=' + encodeURIComponent(KEY)).then(r => r.json()).then(j => {
 // 1순위: 서버가 만들어준 자연스러운 AI 음성(오디오)을 재생
 // 2순위(실패 시): 브라우저 자체 음성으로 대체
 let audioCtx = null;
+function ensureAudioCtx() {
+  audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
 function playAiAudio(base64) {
-  return new Promise((resolve, reject) => {
+  let samples;
+  try {
+    const raw = atob(base64);
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    samples = new Int16Array(bytes.buffer);
+  } catch (e) {
+    return Promise.reject(e);
+  }
+  const play = new Promise((resolve, reject) => {
     try {
-      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-      const raw = atob(base64);
-      const bytes = new Uint8Array(raw.length);
-      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-      const samples = new Int16Array(bytes.buffer);
-      const buffer = audioCtx.createBuffer(1, samples.length, 24000); // 24kHz, 모노
+      const ctx = ensureAudioCtx();
+      const buffer = ctx.createBuffer(1, samples.length, 24000); // 24kHz, 모노
       const ch = buffer.getChannelData(0);
       for (let i = 0; i < samples.length; i++) ch[i] = samples[i] / 32768;
-      const src = audioCtx.createBufferSource();
+      const src = ctx.createBufferSource();
       src.buffer = buffer;
-      src.connect(audioCtx.destination);
+      src.connect(ctx.destination);
       src.onended = resolve;
-      audioCtx.resume().then(() => src.start()).catch(reject);
+      ctx.resume().then(() => src.start()).catch(reject);
     } catch (e) { reject(e); }
   });
+  // 브라우저가 자동재생을 막아 영영 응답이 없는 상태(무한 대기)가 되지 않도록 안전장치를 둠.
+  // 실제 오디오 길이보다 충분히 여유있게 잡아, 정상 재생 중인 오디오가 중간에 끊기지 않게 함
+  const durationMs = (samples.length / 24000) * 1000;
+  const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('audio timeout')), durationMs + 6000));
+  return Promise.race([play, timeout]);
 }
 function speakBrowser(text) {
-  return new Promise(res => {
+  const say = new Promise(res => {
     const synth = window.speechSynthesis;
     synth.cancel();
     const parts = text.match(/[^.!?。？！]+[.!?。？！]?/g) || [text];
@@ -110,6 +140,11 @@ function speakBrowser(text) {
     };
     next();
   });
+  // 일부 기기(특히 아이폰)에서는 onend/onerror가 아예 발생하지 않는 경우가 있어,
+  // 글자 수 기준으로 예상 시간보다 충분히 지나면 강제로 다음 단계로 진행시킴(화면 멈춤 방지)
+  const timeoutMs = Math.max(8000, text.length * 350);
+  const timeout = new Promise(res => setTimeout(res, timeoutMs));
+  return Promise.race([say, timeout]);
 }
 async function speak(text, audioB64) {
   if (audioB64) {
@@ -121,10 +156,22 @@ async function speak(text, audioB64) {
 // ---- 듣기(STT) ----
 function listen() {
   if (!running || busy || ended) return;
-  if (!SR) { setStatus('이 브라우저는 음성 인식을 지원하지 않아요. 크롬으로 열어주세요.'); return; }
+  if (!SR) { setStatus('아래 칸에 글자로 입력해서 이야기해보세요.'); return; }
   rec = new SR(); rec.lang = 'ko-KR'; rec.interimResults = true; rec.continuous = false;
-  let finalText = '';
-  rec.onstart = () => { setStatus('🎤 듣고 있어요. 말씀하세요'); $('main').className = 'listening'; $('main').textContent = '🎤 듣는 중…'; };
+  let finalText = '', started = false;
+  // 일부 기기(특히 아이폰)에서는 음성 인식이 아무 반응 없이 조용히 시작되지 않는 경우가 있어,
+  // 일정 시간 안에 시작되지 않으면 화면이 영영 멈추지 않도록 버튼을 다시 누를 수 있는 상태로 되돌림
+  const startWatchdog = setTimeout(() => {
+    if (started) return;
+    try { rec.abort(); } catch (_) {}
+    running = false;
+    setStatus('버튼을 눌러 다시 이야기해주세요.');
+    $('main').className = ''; $('main').textContent = '🎤 이야기하기'; $('main').disabled = false;
+  }, 4000);
+  rec.onstart = () => {
+    started = true; clearTimeout(startWatchdog);
+    setStatus('🎤 듣고 있어요. 말씀하세요'); $('main').className = 'listening'; $('main').textContent = '🎤 듣는 중…';
+  };
   rec.onresult = e => {
     let interim = '';
     for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -133,15 +180,25 @@ function listen() {
     }
     $('me').textContent = finalText + interim;
   };
-  rec.onerror = e => { if (e.error === 'not-allowed') { running = false; setStatus('마이크 사용을 허용해주세요.'); } };
+  rec.onerror = e => {
+    clearTimeout(startWatchdog);
+    if (e.error === 'not-allowed') { running = false; setStatus('마이크 사용을 허용해주세요.'); }
+  };
   rec.onend = () => {
+    clearTimeout(startWatchdog);
     $('main').className = '';
     if (!running) return;
     if (finalText.trim()) { silentCount = 0; turn(finalText.trim()); }
     else if (++silentCount >= 3) { pause(); }
     else setTimeout(listen, 300);
   };
-  try { rec.start(); } catch (_) {}
+  try { rec.start(); } catch (_) { clearTimeout(startWatchdog); }
+}
+function sendTyped() {
+  const v = $('typeInput').value.trim();
+  if (!v || busy) return;
+  $('typeInput').value = ''; $('me').textContent = v; silentCount = 0;
+  turn(v);
 }
 function pause() {
   running = false; try { rec && rec.abort(); } catch (_) {}
@@ -162,7 +219,8 @@ async function turn(userText) {
     await speak(j.reply, j.audio);
   } catch (e) {
     const msg = '잠깐 문제가 생겼어요. 다시 한 번 말씀해 주시겠어요?';
-    $('bubble').textContent = msg; await speak(msg);
+    $('bubble').textContent = msg;
+    try { await speak(msg); } catch (_) {} // 이것마저 실패해도 아래로 반드시 진행되게
     if (history.length && history[history.length - 1].role === 'user') history.pop();
   }
   busy = false; $('main').disabled = false;
@@ -176,10 +234,22 @@ $('main').onclick = () => {
     t0 = Date.now(); running = true; $('end').hidden = false;
     history = [{ role: 'user', text: START }];
     timer = setInterval(() => { $('bar i').style.width = Math.min(100, elapsed() / TARGET_MIN * 100) + '%'; }, 1000);
-    speechSynthesis.getVoices(); turn(null);
+    speechSynthesis.getVoices();
+    // 버튼 클릭(사용자 동작) 시점에 오디오를 미리 한 번 깨워둬야,
+    // 이후 자동으로 이어지는 대화에서도 브라우저가 음성 재생을 막지 않음
+    try { ensureAudioCtx().resume(); } catch (_) {}
+    turn(null);
   } else if (!running && !ended) { running = true; silentCount = 0; listen(); }
 };
 $('end').onclick = finish;
+
+// 음성 인식을 지원하지 않는 드문 브라우저에서도 대화를 이어갈 수 있도록 하는 예비 수단
+// (엄마가 쓰는 안드로이드 크롬에는 표시되지 않음)
+if (!SR) {
+  $('typebox').hidden = false;
+  $('typeSend').onclick = sendTyped;
+  $('typeInput').addEventListener('keydown', e => { if (e.key === 'Enter') sendTyped(); });
+}
 
 async function finish() {
   if (ended) return; ended = true; running = false; try { rec && rec.abort(); } catch (_) {}
