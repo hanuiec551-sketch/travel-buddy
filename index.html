@@ -28,10 +28,6 @@
   #end { margin-top:22px; padding:14px 26px; font-size:1.15rem; background:#847b9e; }
   #bar { width:100%; max-width:640px; height:8px; background:var(--line); border-radius:8px; margin-top:18px; overflow:hidden; }
   #bar i { display:block; height:100%; width:0; background:var(--accent2); transition:width 1s linear; }
-  #typebox { width:100%; max-width:640px; margin-top:14px; display:flex; gap:8px; }
-  #typebox input { flex:1; padding:14px 16px; border-radius:14px; border:1px solid var(--line); font-size:1.05rem;
-                   font-family:'Noto Sans KR',sans-serif; color:var(--ink); }
-  #typebox button { padding:14px 18px; font-size:1.05rem; background:var(--accent2); }
 </style>
 </head>
 <body>
@@ -43,10 +39,6 @@
 <button id="main">🎤 대화 시작하기</button>
 <div id="bar"><i></i></div>
 <button id="end" hidden>오늘은 여기까지 할게요</button>
-<div id="typebox" hidden>
-  <input id="typeInput" type="text" placeholder="여기에 글자로 입력해보세요">
-  <button id="typeSend">보내기</button>
-</div>
 
 <script>
 // ▼▼▼ 설정 ▼▼▼ Apps Script 웹앱 배포 URL을 붙여넣으세요
@@ -156,7 +148,7 @@ async function speak(text, audioB64) {
 // ---- 듣기(STT) ----
 function listen() {
   if (!running || busy || ended) return;
-  if (!SR) { setStatus('아래 칸에 글자로 입력해서 이야기해보세요.'); return; }
+  if (!SR) { setStatus('이 브라우저는 음성 인식을 지원하지 않아요. 크롬으로 열어주세요.'); return; }
   rec = new SR(); rec.lang = 'ko-KR'; rec.interimResults = true; rec.continuous = false;
   let finalText = '', started = false;
   // 일부 기기(특히 아이폰)에서는 음성 인식이 아무 반응 없이 조용히 시작되지 않는 경우가 있어,
@@ -193,12 +185,6 @@ function listen() {
     else setTimeout(listen, 300);
   };
   try { rec.start(); } catch (_) { clearTimeout(startWatchdog); }
-}
-function sendTyped() {
-  const v = $('typeInput').value.trim();
-  if (!v || busy) return;
-  $('typeInput').value = ''; $('me').textContent = v; silentCount = 0;
-  turn(v);
 }
 function pause() {
   running = false; try { rec && rec.abort(); } catch (_) {}
@@ -242,14 +228,6 @@ $('main').onclick = () => {
   } else if (!running && !ended) { running = true; silentCount = 0; listen(); }
 };
 $('end').onclick = finish;
-
-// 음성 인식을 지원하지 않는 드문 브라우저에서도 대화를 이어갈 수 있도록 하는 예비 수단
-// (엄마가 쓰는 안드로이드 크롬에는 표시되지 않음)
-if (!SR) {
-  $('typebox').hidden = false;
-  $('typeSend').onclick = sendTyped;
-  $('typeInput').addEventListener('keydown', e => { if (e.key === 'Enter') sendTyped(); });
-}
 
 async function finish() {
   if (ended) return; ended = true; running = false; try { rec && rec.abort(); } catch (_) {}
