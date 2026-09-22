@@ -53,28 +53,46 @@ const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let history = [], sid = Date.now() + '-' + Math.random().toString(36).slice(2, 7);
 let t0 = 0, running = false, busy = false, rec = null, silentCount = 0, timer = null, ended = false;
 
-async function api(body) {
-  // 서버 응답이 오래 걸리거나 아예 안 올 때 화면이 "생각하는 중"에서 영원히 멈추지 않도록
-  // 일정 시간 후 강제로 실패 처리(타임아웃)함
+// 시간제한이 있는 fetch. 셀룰러(LTE) 환경에서는 와이파이보다 순간적으로 끊기는 일이
+// 흔해서, 한 번 실패해도 사용자에게 바로 에러를 보여주지 않고 조용히 한 번 더 시도함
+async function fetchWithTimeout(url, opts, timeoutMs) {
   const ctrl = new AbortController();
-  const killer = setTimeout(() => ctrl.abort(), 25000);
+  const killer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    // text/plain 으로 보내 CORS 사전요청(preflight)을 피함
-    const r = await fetch(API, { method: 'POST', body: JSON.stringify({ k: KEY, sid, ...body }), signal: ctrl.signal });
-    const j = await r.json();
-    if (j.error) throw new Error(j.error);
-    return j;
+    return await fetch(url, Object.assign({}, opts, { signal: ctrl.signal }));
   } finally {
     clearTimeout(killer);
   }
+}
+async function withRetry(fn, tries, gapMs) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try { return await fn(); }
+    catch (e) { lastErr = e; if (i < tries - 1) await new Promise(res => setTimeout(res, gapMs)); }
+  }
+  throw lastErr;
+}
+async function api(body) {
+  return withRetry(async () => {
+    // text/plain 으로 보내 CORS 사전요청(preflight)을 피함
+    const r = await fetchWithTimeout(API, { method: 'POST', body: JSON.stringify({ k: KEY, sid, ...body }) }, 18000);
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    return j;
+  }, 2, 800);
 }
 const elapsed = () => t0 ? (Date.now() - t0) / 60000 : 0;
 const setStatus = s => $('status').textContent = s;
 
 // ---- 오늘의 주제 ----
-fetch(API + '?k=' + encodeURIComponent(KEY)).then(r => r.json()).then(j => {
+withRetry(async () => {
+  const r = await fetchWithTimeout(API + '?k=' + encodeURIComponent(KEY), {}, 12000);
+  return r.json();
+}, 2, 800).then(j => {
   $('topic').textContent = j.error ? '링크를 다시 확인해주세요' : '오늘의 주제: ' + j.title;
-}).catch(() => $('topic').textContent = '');
+}).catch(() => {
+  $('topic').textContent = '연결이 원활하지 않아요. 잠시 후 새로고침해주세요.';
+});
 
 // ---- 말하기(TTS) ----
 // 1순위: 서버가 만들어준 자연스러운 AI 음성(오디오)을 재생
