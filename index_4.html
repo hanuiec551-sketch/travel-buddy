@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>하루 10분 이야기</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#F4F1FB; --ink:#3D3A54; --accent:#8B7BC6; --accent2:#5FA8A0; --card:#ffffff; --line:#E4DDF5; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,"Noto Sans KR",sans-serif; background:var(--bg); color:var(--ink);
+         min-height:100vh; display:flex; flex-direction:column; align-items:center; padding:20px 16px 32px; }
+  h1 { font-family:'Gowun Dodum',sans-serif; font-size:1.5rem; margin:8px 0 4px; }
+  #topic { font-family:'Gowun Dodum',sans-serif; font-size:1.3rem; color:var(--accent); margin:0 0 16px; text-align:center; }
+  #bubble { width:100%; max-width:640px; min-height:170px; background:var(--card); border-radius:26px; padding:22px;
+            font-size:1.6rem; line-height:1.55; box-shadow:0 4px 18px rgba(90,70,150,.12); border:1px solid var(--line); }
+  #me { width:100%; max-width:640px; min-height:2.4em; margin-top:12px; padding:8px 14px; font-size:1.2rem; color:#6d6690; text-align:center; }
+  #status { font-size:1.3rem; font-weight:700; margin:12px 0; min-height:1.8em; text-align:center; }
+  button { font-family:inherit; border:0; border-radius:20px; color:#fff; cursor:pointer; }
+  #main { width:100%; max-width:640px; padding:26px; font-size:2rem; font-weight:700; border-radius:999px;
+          background:linear-gradient(135deg,var(--accent),#6F9CC9); }
+  #main.listening { background:var(--accent2); }
+  #main:disabled { background:#c6c0da; }
+  #end { margin-top:22px; padding:14px 26px; font-size:1.2rem; background:#847b9e; }
+  #typebox { margin-top:26px; opacity:.7; width:100%; max-width:640px; display:flex; gap:8px; }
+  #typebox input { flex:1; font-size:1rem; padding:8px; border-radius:10px; border:1px solid var(--line); }
+  #typebox button { background:#847b9e; padding:8px 14px; border-radius:10px; }
+  #bar { width:100%; max-width:640px; height:8px; background:var(--line); border-radius:8px; margin-top:16px; overflow:hidden; }
+  #bar i { display:block; height:100%; width:0; background:var(--accent2); transition:width 1s linear; }
+</style>
+</head>
+<body>
+<h1>💬 하루 10분 이야기</h1>
+<p id="topic">불러오는 중…</p>
+<div id="bubble">아래 큰 버튼을 눌러 시작해요.</div>
+<div id="me"></div>
+<div id="status"></div>
+<button id="main">☎ 대화 시작하기</button>
+<div id="bar"><i></i></div>
+<button id="end" hidden>오늘은 여기까지 할게요</button>
+<div id="typebox"><input id="txt" placeholder="(글자로 입력)"><button id="send">보내기</button></div>
+
+<script>
+// ▼▼▼ 설정 ▼▼▼ Apps Script 웹앱 배포 URL을 붙여넣으세요
+const API = 'https://script.google.com/macros/s/AKfycbx-yOchb1muuHCJQnq2It6HxNCXxvRqRstIfaRLWeBe1RkJz6-TZA_vp5wdv8sM0H-1/exec';
+// ▲▲▲▲▲▲▲▲▲▲▲
+const KEY = new URLSearchParams(location.search).get('k') || '';
+const TARGET_MIN = 10, HARD_MAX_MIN = 15;
+const START = '(엄마가 대화를 시작했습니다. 따뜻하게 인사하고, 오늘의 주제로 먼저 이야기를 시작해주세요.)';
+
+const $ = id => document.getElementById(id);
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let history = [], sid = Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+let t0 = 0, running = false, busy = false, rec = null, silentCount = 0, timer = null, ended = false;
+
+async function api(body) {
+  // text/plain 으로 보내 CORS 사전요청(preflight)을 피함
+  const r = await fetch(API, { method: 'POST', body: JSON.stringify({ k: KEY, sid, ...body }) });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error);
+  return j;
+}
+const elapsed = () => t0 ? (Date.now() - t0) / 60000 : 0;
+const setStatus = s => $('status').textContent = s;
+
+// ---- 오늘의 주제 ----
+fetch(API + '?k=' + encodeURIComponent(KEY)).then(r => r.json()).then(j => {
+  $('topic').textContent = j.error ? '링크를 다시 확인해주세요' : '오늘의 주제: ' + j.title;
+}).catch(() => $('topic').textContent = '');
+
+// ---- 말하기(TTS) ----
+function speak(text) {
+  return new Promise(res => {
+    const synth = window.speechSynthesis;
+    synth.cancel();
+    const parts = text.match(/[^.!?。？！]+[.!?。？！]?/g) || [text];
+    const voice = synth.getVoices().find(v => v.lang && v.lang.replace('_', '-').startsWith('ko'));
+    let i = 0;
+    const next = () => {
+      if (i >= parts.length) return res();
+      const u = new SpeechSynthesisUtterance(parts[i++].trim());
+      u.lang = 'ko-KR'; u.rate = 0.9; if (voice) u.voice = voice;
+      u.onend = next; u.onerror = next;
+      synth.speak(u);
+    };
+    next();
+  });
+}
+
+// ---- 듣기(STT) ----
+function listen() {
+  if (!running || busy || ended) return;
+  if (!SR) { setStatus('이 브라우저는 음성 인식을 지원하지 않아요. 크롬으로 열어주세요.'); return; }
+  rec = new SR(); rec.lang = 'ko-KR'; rec.interimResults = true; rec.continuous = false;
+  let finalText = '';
+  rec.onstart = () => { setStatus('🎤 듣고 있어요. 말씀하세요'); $('main').className = 'listening'; $('main').textContent = '🎤 듣는 중…'; };
+  rec.onresult = e => {
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) finalText += e.results[i][0].transcript;
+      else interim += e.results[i][0].transcript;
+    }
+    $('me').textContent = finalText + interim;
+  };
+  rec.onerror = e => { if (e.error === 'not-allowed') { running = false; setStatus('마이크 사용을 허용해주세요.'); } };
+  rec.onend = () => {
+    $('main').className = '';
+    if (!running) return;
+    if (finalText.trim()) { silentCount = 0; turn(finalText.trim()); }
+    else if (++silentCount >= 3) { pause(); }
+    else setTimeout(listen, 300);
+  };
+  try { rec.start(); } catch (_) {}
+}
+function pause() {
+  running = false; try { rec && rec.abort(); } catch (_) {}
+  setStatus('편하실 때 아래 버튼을 눌러 다시 이야기해요.');
+  $('main').className = ''; $('main').textContent = '🎤 이야기하기';
+}
+
+// ---- 한 턴 진행 ----
+async function turn(userText) {
+  busy = true;
+  try {
+    if (userText) history.push({ role: 'user', text: userText });
+    $('main').disabled = true; setStatus('생각하는 중이에요…');
+    const j = await api({ action: 'chat', messages: history, elapsedMin: elapsed() });
+    history.push({ role: 'model', text: j.reply });
+    $('bubble').textContent = j.reply; $('me').textContent = '';
+    setStatus('🔊 말씀드리는 중…');
+    await speak(j.reply);
+  } catch (e) {
+    const msg = '잠깐 문제가 생겼어요. 다시 한 번 말씀해 주시겠어요?';
+    $('bubble').textContent = msg; await speak(msg);
+    if (history.length && history[history.length - 1].role === 'user') history.pop();
+  }
+  busy = false; $('main').disabled = false;
+  if (elapsed() >= HARD_MAX_MIN) return finish();
+  if (running) listen();
+}
+
+// ---- 시작/종료 ----
+$('main').onclick = () => {
+  if (!t0) {               // 처음 시작
+    t0 = Date.now(); running = true; $('end').hidden = false;
+    history = [{ role: 'user', text: START }];
+    timer = setInterval(() => { $('bar i').style.width = Math.min(100, elapsed() / TARGET_MIN * 100) + '%'; }, 1000);
+    speechSynthesis.getVoices(); turn(null);
+  } else if (!running && !ended) { running = true; silentCount = 0; listen(); }
+};
+$('send').onclick = () => { const v = $('txt').value.trim(); if (v && !busy) { $('txt').value = ''; running = true; turn(v); } };
+$('end').onclick = finish;
+
+async function finish() {
+  if (ended) return; ended = true; running = false; try { rec && rec.abort(); } catch (_) {}
+  clearInterval(timer); speechSynthesis.cancel();
+  $('main').hidden = true; $('end').hidden = true; $('me').textContent = '';
+  setStatus('');
+  $('bubble').textContent = '오늘도 즐거웠어요. 내일 또 이야기해요! 🌸';
+  try { await api({ action: 'end', messages: history, elapsedMin: elapsed() }); } catch (_) {}
+}
+// 탭을 닫아도 진행 기록은 남도록 (요약은 못 남음)
+</script>
+</body>
+</html>
