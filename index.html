@@ -45,7 +45,7 @@
 const API = 'https://script.google.com/macros/s/AKfycbx-yOchb1muuHCJQnq2It6HxNCXxvRqRstIfaRLWeBe1RkJz6-TZA_vp5wdv8sM0H-1/exec';
 // ▲▲▲▲▲▲▲▲▲▲▲
 const KEY = new URLSearchParams(location.search).get('k') || '';
-const TARGET_MIN = 10, HARD_MAX_MIN = 15;
+const TARGET_MIN = 15, HARD_MAX_MIN = 20;
 const START = '(엄마가 대화를 시작했습니다. 따뜻하게 인사하고, 오늘의 주제로 먼저 이야기를 시작해주세요.)';
 
 const $ = id => document.getElementById(id);
@@ -83,6 +83,54 @@ async function api(body) {
 }
 const elapsed = () => t0 ? (Date.now() - t0) / 60000 : 0;
 const setStatus = s => $('status').textContent = s;
+
+// ---- 화면 꺼짐 방지 ----
+// 대화 중에 화면이 자동으로 꺼지면 마이크가 끊기고 흐름이 끊기므로,
+// 대화가 진행되는 동안은 화면이 꺼지지 않게 함.
+// 1순위: Wake Lock API (최신 크롬/최신 아이폰 사파리 지원)
+// 2순위(지원 안 하는 기기): 안 보이는 영상을 계속 재생해서 화면이 안 꺼지게 속이는 방식
+let wakeLock = null, noSleepVideo = null, noSleepTimer = null;
+async function requestWakeLock() {
+  try {
+    if ('wakeLock' in navigator) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+      return;
+    }
+  } catch (e) { /* 실패하면 아래 대체 방법으로 넘어감 */ }
+  startNoSleepFallback();
+}
+function releaseWakeLock() {
+  try { wakeLock && wakeLock.release(); } catch (_) {}
+  wakeLock = null;
+  if (noSleepTimer) { clearInterval(noSleepTimer); noSleepTimer = null; }
+  if (noSleepVideo) { try { noSleepVideo.pause(); noSleepVideo.remove(); } catch (_) {} noSleepVideo = null; }
+}
+function startNoSleepFallback() {
+  if (noSleepVideo) return;
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = 2; canvas.height = 2;
+    const ctx = canvas.getContext('2d');
+    if (!canvas.captureStream) return;
+    const stream = canvas.captureStream(1);
+    const v = document.createElement('video');
+    v.setAttribute('playsinline', ''); v.muted = true; v.loop = true;
+    v.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none;';
+    v.srcObject = stream;
+    document.body.appendChild(v);
+    v.play().catch(() => {});
+    noSleepTimer = setInterval(() => {
+      ctx.fillStyle = (Date.now() % 2000 < 1000) ? '#000' : '#010101';
+      ctx.fillRect(0, 0, 2, 2);
+    }, 1000);
+    noSleepVideo = v;
+  } catch (e) { /* 실패해도 대화 자체는 계속 진행되게 둠 */ }
+}
+// 화면을 잠갔다 다시 켜거나 다른 탭에 갔다 돌아오면 Wake Lock이 풀려있으므로 다시 요청
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && running) requestWakeLock();
+});
 
 // ---- 오늘의 주제 ----
 withRetry(async () => {
@@ -244,6 +292,7 @@ $('main').onclick = () => {
     // 버튼 클릭(사용자 동작) 시점에 오디오를 미리 한 번 깨워둬야,
     // 이후 자동으로 이어지는 대화에서도 브라우저가 음성 재생을 막지 않음
     try { ensureAudioCtx().resume(); } catch (_) {}
+    requestWakeLock();
     turn(null);
   } else if (!running && !ended) { running = true; silentCount = 0; listen(); }
 };
@@ -251,7 +300,7 @@ $('end').onclick = finish;
 
 async function finish() {
   if (ended) return; ended = true; running = false; try { rec && rec.abort(); } catch (_) {}
-  clearInterval(timer); speechSynthesis.cancel();
+  clearInterval(timer); speechSynthesis.cancel(); releaseWakeLock();
   $('main').hidden = true; $('end').hidden = true; $('me').textContent = '';
   setStatus('');
   $('bubble').textContent = '오늘도 즐거웠어요. 내일 또 이야기해요! 🌸';
