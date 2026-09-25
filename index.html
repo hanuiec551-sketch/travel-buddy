@@ -215,8 +215,31 @@ async function speak(text, audioB64) {
 function listen() {
   if (!running || busy || ended) return;
   if (!SR) { setStatus('이 브라우저는 음성 인식을 지원하지 않아요. 크롬으로 열어주세요.'); return; }
-  rec = new SR(); rec.lang = 'ko-KR'; rec.interimResults = true; rec.continuous = false;
-  let finalText = '', started = false;
+  // continuous=true로 켜서, 말씀 중간에 잠깐 멈추셔도 브라우저가 바로 "끝났다"고 판단해
+  // 끊어버리지 않게 함. 대신 "진짜로 말이 끝났다"는 판단은 아래 무음 타이머로 우리가 직접 함.
+  rec = new SR(); rec.lang = 'ko-KR'; rec.interimResults = true; rec.continuous = true;
+  let finalText = '', started = false, silenceTimer = null;
+  // 엄마가 천천히 말씀하시거나 단어 사이에 멈칫하셔도 끊기지 않도록,
+  // 이만큼(4.5초) 계속 조용해야 비로소 "말씀이 끝났다"고 보고 다음으로 넘어감 (애매할 때 기본값)
+  const SILENCE_MS = 4500;
+  const SILENCE_SHORT_MS = 1300;  // 문장이 끝난 것 같으면 빠르게 넘어감
+  const SILENCE_LONG_MS = 6000;   // "음...", "그래서" 처럼 말이 더 이어질 것 같으면 더 기다림
+  const resetSilenceTimer = (ms) => {
+    clearTimeout(silenceTimer);
+    silenceTimer = setTimeout(() => { try { rec.stop(); } catch (_) {} }, ms || SILENCE_MS);
+  };
+  // 방금 막 확정된 말 조각을 보고, 문장이 끝난 것 같은지 아직 이어질 것 같은지 대략 판단
+  const FILLER_WORDS = ['음', '어', '아', '그', '저', '으', '엄', '인제', '그니까', '그러니까', '근데', '그런데', '그래서', '그리고', '아니', '뭐더라', '뭐지', '어디보자'];
+  const CONTINUATION_SUFFIX = /(는데|면서|지만|어서|이랑|하고|랑)$/;
+  const SENTENCE_END = /(요|다|죠|네요|어요|아요|습니다|했어|였어|거든요|잖아요|더라고요|더라구요)$/;
+  function nextSilenceMs(newFinalChunk) {
+    const t = (newFinalChunk || '').trim();
+    if (!t) return SILENCE_MS; // 아직 확정된 말이 없으면(중간중간 말하는 중) 기존 기본값
+    const lastToken = t.split(/\s+/).pop() || t;
+    if (FILLER_WORDS.includes(lastToken) || CONTINUATION_SUFFIX.test(lastToken)) return SILENCE_LONG_MS;
+    if (SENTENCE_END.test(lastToken)) return SILENCE_SHORT_MS;
+    return SILENCE_MS; // 애매하면 중간값
+  }
   // 일부 기기(특히 아이폰)에서는 음성 인식이 아무 반응 없이 조용히 시작되지 않는 경우가 있어,
   // 일정 시간 안에 시작되지 않으면 화면이 영영 멈추지 않도록 버튼을 다시 누를 수 있는 상태로 되돌림
   const startWatchdog = setTimeout(() => {
@@ -229,21 +252,24 @@ function listen() {
   rec.onstart = () => {
     started = true; clearTimeout(startWatchdog);
     setStatus('🎤 듣고 있어요. 말씀하세요'); $('main').className = 'listening'; $('main').textContent = '🎤 듣는 중…';
+    resetSilenceTimer();
   };
   rec.onresult = e => {
-    let interim = '';
+    let interim = '', newFinalChunk = '';
     for (let i = e.resultIndex; i < e.results.length; i++) {
-      if (e.results[i].isFinal) finalText += e.results[i][0].transcript;
+      if (e.results[i].isFinal) { finalText += e.results[i][0].transcript; newFinalChunk += e.results[i][0].transcript; }
       else interim += e.results[i][0].transcript;
     }
     $('me').textContent = finalText + interim;
+    // 말씀 중(interim)이면 기본값으로, 한 구절이 막 확정됐으면 문장이 끝난 느낌인지 보고 기다리는 시간을 다르게 줌
+    resetSilenceTimer(nextSilenceMs(newFinalChunk));
   };
   rec.onerror = e => {
-    clearTimeout(startWatchdog);
+    clearTimeout(startWatchdog); clearTimeout(silenceTimer);
     if (e.error === 'not-allowed') { running = false; setStatus('마이크 사용을 허용해주세요.'); }
   };
   rec.onend = () => {
-    clearTimeout(startWatchdog);
+    clearTimeout(startWatchdog); clearTimeout(silenceTimer);
     $('main').className = '';
     if (!running) return;
     if (finalText.trim()) { silentCount = 0; turn(finalText.trim()); }
